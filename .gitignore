@@ -7,3 +7,4 @@ __pycache__/
 outputs/
 outputs_test/
 outputs_test_wrapper/
+papers/*.pdf
