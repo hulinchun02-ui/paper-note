@@ -19,6 +19,21 @@ SCAN_TEXT_THRESHOLD = 500
 CHUNK_CHAR_LIMIT = 26000
 
 
+def load_env_file(env_path: Path = Path(".env")) -> None:
+    """Load simple KEY=VALUE pairs from .env without overriding real env vars."""
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 @dataclasses.dataclass(frozen=True)
 class FieldSpec:
     group_key: str
@@ -550,6 +565,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     args = build_arg_parser().parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
 

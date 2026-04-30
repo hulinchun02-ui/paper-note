@@ -26,15 +26,21 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-DeepSeek 默认配置：
+DeepSeek 默认配置。推荐复制 `.env.example` 到 `.env` 后填写真实 key：
 
 ```bash
-export DEEPSEEK_API_KEY="..."
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-chat"
+cp .env.example .env
 ```
 
-仍兼容 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`，CLI 参数优先级最高。
+`.env` 内容：
+
+```bash
+DEEPSEEK_API_KEY=你的DeepSeek API Key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+仍兼容 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。CLI 参数优先级最高，真实环境变量优先级高于 `.env`。
 
 ## 常用命令
 

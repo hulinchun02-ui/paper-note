@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -40,6 +41,31 @@ class PaperNoteSummarizerTests(unittest.TestCase):
         chunks = pns.chunk_pages(pages, limit=60)
         flattened = [page["page_number"] for chunk in chunks for page in chunk]
         self.assertEqual(flattened, [1, 2, 3])
+
+    def test_load_env_file_does_not_override_existing_environment(self):
+        with TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                "DEEPSEEK_API_KEY=from-file\nDEEPSEEK_MODEL='deepseek-chat'\n",
+                encoding="utf-8",
+            )
+            old_key = os.environ.get("DEEPSEEK_API_KEY")
+            old_model = os.environ.get("DEEPSEEK_MODEL")
+            try:
+                os.environ["DEEPSEEK_API_KEY"] = "from-env"
+                os.environ.pop("DEEPSEEK_MODEL", None)
+                pns.load_env_file(env_path)
+                self.assertEqual(os.environ["DEEPSEEK_API_KEY"], "from-env")
+                self.assertEqual(os.environ["DEEPSEEK_MODEL"], "deepseek-chat")
+            finally:
+                if old_key is None:
+                    os.environ.pop("DEEPSEEK_API_KEY", None)
+                else:
+                    os.environ["DEEPSEEK_API_KEY"] = old_key
+                if old_model is None:
+                    os.environ.pop("DEEPSEEK_MODEL", None)
+                else:
+                    os.environ["DEEPSEEK_MODEL"] = old_model
 
 
 if __name__ == "__main__":

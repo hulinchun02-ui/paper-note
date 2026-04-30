@@ -24,15 +24,21 @@ pip install -r requirements.txt
 python paper_note_summarizer.py --pdf /path/to/paper.pdf --out outputs
 ```
 
-4. Use DeepSeek-compatible environment variables or equivalent CLI flags:
+4. Prefer a local `.env` file copied from `.env.example`:
 
 ```bash
-export DEEPSEEK_API_KEY="..."
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-chat"
+cp .env.example .env
 ```
 
-The script also accepts `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` for other OpenAI-compatible providers.
+Then fill in:
+
+```bash
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+The script also accepts real environment variables, CLI flags, and `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` for other OpenAI-compatible providers.
 
 5. If the user provides a known paper URL or code URL, pass it explicitly:
 
