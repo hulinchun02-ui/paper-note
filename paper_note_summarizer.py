@@ -557,7 +557,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default=os.getenv("DEEPSEEK_MODEL") or os.getenv("OPENAI_MODEL", DEFAULT_MODEL),
-        help="模型名称；默认 deepseek-chat。",
+        help=f"模型名称；默认 {DEFAULT_MODEL}。",
     )
     parser.add_argument("--dry-run", action="store_true", help="不读取 PDF、不调用模型，生成示例输出以验证渲染链路。")
     parser.add_argument("--json-only", action="store_true", help="只写 summary JSON 和 evidence JSON，不生成 DOCX/MD。")
