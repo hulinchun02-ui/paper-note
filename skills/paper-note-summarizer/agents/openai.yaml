@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Note Summarizer"
+  short_description: "Summarize academic PDFs into rigorous notes"
+  default_prompt: "Use $paper-note-summarizer to summarize this paper PDF into a Chinese paper-note table."

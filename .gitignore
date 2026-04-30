@@ -1,0 +1,8 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+outputs/
+outputs_test/
+outputs_test_wrapper/
