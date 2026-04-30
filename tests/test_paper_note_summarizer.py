@@ -46,7 +46,7 @@ class PaperNoteSummarizerTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text(
-                "DEEPSEEK_API_KEY=from-file\nDEEPSEEK_MODEL='deepseek-chat'\n",
+                "DEEPSEEK_API_KEY=from-file\nDEEPSEEK_MODEL='deepseek-v4-flash'\n",
                 encoding="utf-8",
             )
             old_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -56,7 +56,7 @@ class PaperNoteSummarizerTests(unittest.TestCase):
                 os.environ.pop("DEEPSEEK_MODEL", None)
                 pns.load_env_file(env_path)
                 self.assertEqual(os.environ["DEEPSEEK_API_KEY"], "from-env")
-                self.assertEqual(os.environ["DEEPSEEK_MODEL"], "deepseek-chat")
+                self.assertEqual(os.environ["DEEPSEEK_MODEL"], "deepseek-v4-flash")
             finally:
                 if old_key is None:
                     os.environ.pop("DEEPSEEK_API_KEY", None)

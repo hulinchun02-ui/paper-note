@@ -35,7 +35,7 @@ Then fill in:
 ```bash
 DEEPSEEK_API_KEY=...
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
 The script also accepts real environment variables, CLI flags, and `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` for other OpenAI-compatible providers.

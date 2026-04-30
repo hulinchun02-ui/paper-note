@@ -37,7 +37,7 @@ cp .env.example .env
 ```bash
 DEEPSEEK_API_KEY=你的DeepSeek API Key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
 仍兼容 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。CLI 参数优先级最高，真实环境变量优先级高于 `.env`。

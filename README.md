@@ -39,7 +39,7 @@ cp .env.example .env
 ```bash
 DEEPSEEK_API_KEY=你的DeepSeek API Key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
 `.env` 已加入 `.gitignore`，不会提交到 GitHub。
@@ -49,7 +49,7 @@ DEEPSEEK_MODEL=deepseek-chat
 ```bash
 export DEEPSEEK_API_KEY="your-api-key"
 export DEEPSEEK_BASE_URL="https://api.deepseek.com"  # 可选，默认 DeepSeek
-export DEEPSEEK_MODEL="deepseek-chat"                # 可选，默认 deepseek-chat
+export DEEPSEEK_MODEL="deepseek-v4-flash"            # 可选，默认 deepseek-v4-flash
 ```
 
 也可继续使用 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 接入其他 OpenAI-compatible 服务。CLI 参数优先级高于环境变量，真实环境变量优先级高于 `.env`。

@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 MISSING_TEXT = "论文未明确说明"
 SCAN_TEXT_THRESHOLD = 500
 CHUNK_CHAR_LIMIT = 26000
