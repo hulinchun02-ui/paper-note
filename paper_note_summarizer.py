@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Summarize academic PDFs into Chinese paper-note tables."""
+"""Summarize academic PDFs into Chinese paper-note tables.
+
+本文件是项目的主入口，既可以作为命令行程序运行，也可以被测试或
+`skills/paper-note-summarizer/scripts/paper_note_summarizer.py` 包装脚本复用。
+
+核心调用链：
+
+1. `main()` 读取 `.env`、解析命令行参数、创建输出目录。
+2. 非 dry-run 模式下，`extract_pdf_pages()` 从 PDF 中按页抽取文本。
+3. `summarize_with_model()` 将页文本分块，调用 DeepSeek/OpenAI-compatible
+   Chat Completions 接口生成结构化论文笔记。
+4. `validate_and_normalize()` 校验模型 JSON，必要时由 `repair_summary_json()`
+   再调用一次模型修复 schema。
+5. `render_markdown()`、`render_docx()`、`write_evidence()` 将统一的 summary
+   数据分别渲染为 Markdown、Word 表格和 evidence JSON。
+
+所有渲染函数都依赖同一个 summary schema，因此新增字段时必须同步修改
+`FIELD_SPECS`、prompt/schema 生成逻辑和对应测试。
+"""
 
 from __future__ import annotations
 
@@ -20,7 +38,16 @@ CHUNK_CHAR_LIMIT = 26000
 
 
 def load_env_file(env_path: Path = Path(".env")) -> None:
-    """Load simple KEY=VALUE pairs from .env without overriding real env vars."""
+    """读取项目根目录 `.env` 中的 `KEY=VALUE` 配置。
+
+    调用位置：`main()` 的第一步。
+
+    设计原因：
+    - 用户可以把 DeepSeek API key 写入 `.env`，不用每次手动 export。
+    - 如果终端里已经设置了真实环境变量，则真实环境变量优先，`.env`
+      不会覆盖它，方便临时切换模型或 key。
+    - 这里只实现简单的 `KEY=VALUE` 解析，避免为一个小 CLI 增加额外依赖。
+    """
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -36,6 +63,19 @@ def load_env_file(env_path: Path = Path(".env")) -> None:
 
 @dataclasses.dataclass(frozen=True)
 class FieldSpec:
+    """描述论文笔记中的一个输出字段。
+
+    `FIELD_SPECS` 是整个项目的字段单一来源：
+    - `schema_template()` 用它生成模型必须返回的 JSON schema。
+    - `validate_and_normalize()` 用它校验模型输出是否完整。
+    - `render_markdown()` 和 `render_docx()` 用它决定输出顺序和表格标签。
+
+    字段含义：
+    - `group_key` / `field_key`：机器可读的 JSON 路径。
+    - `group_label` / `field_label`：用户可读的中文表格标题。
+    - `long_text`：DOCX 渲染时是否按长文本单元格处理。
+    """
+
     group_key: str
     group_label: str
     field_key: str
@@ -88,7 +128,17 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
 
 
 def normalize_text(text: str) -> str:
-    """Normalize extracted PDF text without changing technical terms."""
+    """清理 PDF 抽取出的页面文本。
+
+    调用位置：`extract_pdf_pages()` 对每一页文本调用本函数。
+
+    处理内容：
+    - 去掉 PDF 中偶发的空字符。
+    - 合并英文断词换行，例如 `anom-\naly` -> `anomaly`。
+    - 压缩多余空白和连续空行。
+
+    注意：这里不做语义改写，避免改变论文术语、公式或方法名。
+    """
     text = text.replace("\x00", "")
     text = re.sub(r"(?<=\w)-\n(?=\w)", "", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -98,6 +148,22 @@ def normalize_text(text: str) -> str:
 
 
 def extract_pdf_pages(pdf_path: Path) -> list[dict[str, Any]]:
+    """从 PDF 中抽取按页组织的文本。
+
+    输入：
+    - `pdf_path`：本地论文 PDF 路径。
+
+    输出：
+    - `[{ "page_number": 1, "text": "..." }, ...]`
+
+    调用位置：`main()` 在真实总结模式下调用，然后把结果传给
+    `summarize_with_model()`。
+
+    失败策略：
+    - 缺少 `pypdf` 时给出安装提示。
+    - 可抽取文本少于 `SCAN_TEXT_THRESHOLD` 时认为可能是扫描版 PDF，
+      直接终止；当前版本不做 OCR。
+    """
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -121,10 +187,30 @@ def extract_pdf_pages(pdf_path: Path) -> list[dict[str, Any]]:
 
 
 def pages_to_source(pages: Iterable[dict[str, Any]]) -> str:
+    """把页对象拼接成带 `[Page N]` 标记的模型输入文本。
+
+    调用位置：
+    - 单 chunk 时由 `summarize_with_model()` 直接放入最终总结 prompt。
+    - 多 chunk 时先放入 `chunk_extraction_prompt()` 做证据线索抽取。
+
+    页码标记是 evidence 追溯的基础，模型会根据这些标记生成
+    `evidence.page_refs`。
+    """
     return "\n\n".join(f"[Page {page['page_number']}]\n{page['text']}" for page in pages)
 
 
 def chunk_pages(pages: list[dict[str, Any]], limit: int = CHUNK_CHAR_LIMIT) -> list[list[dict[str, Any]]]:
+    """按字符长度把论文页切成多个 chunk。
+
+    调用位置：`summarize_with_model()`。
+
+    为什么按页切：
+    - 保留页码，便于 evidence 回溯。
+    - 避免把单页拆开后模型难以定位上下文。
+
+    `limit` 是粗略字符上限，不等同于 token 上限，但足以避免普通论文一次性
+    塞入过长上下文。
+    """
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_len = 0
@@ -142,6 +228,17 @@ def chunk_pages(pages: list[dict[str, Any]], limit: int = CHUNK_CHAR_LIMIT) -> l
 
 
 def schema_template() -> dict[str, Any]:
+    """生成模型输出和本地校验共用的 summary JSON 模板。
+
+    调用位置：
+    - `final_summary_prompt()`：把模板嵌入 prompt，约束模型输出。
+    - `validate_and_normalize()`：创建规范化结果的初始结构。
+    - `repair_summary_json()`：告诉模型修复目标 schema。
+
+    每个字段固定包含：
+    - `value`：最终写入 DOCX/Markdown 的中文总结。
+    - `evidence`：页码、短引文、可信度、备注，只写入 JSON 证据文件。
+    """
     template: dict[str, Any] = {}
     for spec in FIELD_SPECS:
         template.setdefault(spec.group_key, {})
@@ -158,6 +255,14 @@ def schema_template() -> dict[str, Any]:
 
 
 def system_prompt() -> str:
+    """生成所有模型调用共享的系统提示词。
+
+    调用位置：
+    - `summarize_with_model()` 的分块证据抽取和最终总结调用。
+    - `repair_summary_json()` 的 JSON 修复调用。
+
+    核心约束是“只依据原文，不编造”，并要求模型输出合法 JSON。
+    """
     return (
         "你是一名严谨的中文学术论文阅读助手。只能依据用户提供的论文原文总结，"
         "不得编造论文没有明确说明的信息。若没有证据，字段 value 必须写"
@@ -171,6 +276,20 @@ def final_summary_prompt(
     pdf_link: str | None = None,
     code_link: str | None = None,
 ) -> str:
+    """生成最终论文笔记总结 prompt。
+
+    输入：
+    - `source_text`：完整论文文本，或多 chunk 证据线索汇总。
+    - `title_hint` / `pdf_link` / `code_link`：用户可选补充信息。
+
+    输出：
+    - 一个字符串 prompt，交给 `call_chat_completion()`。
+
+    调用位置：`summarize_with_model()` 的最终总结阶段。
+
+    这里会把 `schema_template()` 的 JSON 模板直接放进 prompt，降低模型漏字段
+    或改字段名的概率。
+    """
     template = json.dumps(schema_template(), ensure_ascii=False, indent=2)
     hints = {
         "title_hint": title_hint or "",
@@ -202,6 +321,13 @@ def final_summary_prompt(
 
 
 def chunk_extraction_prompt(source_text: str) -> str:
+    """生成长论文分块证据抽取 prompt。
+
+    调用位置：`summarize_with_model()` 在 `chunk_pages()` 返回多个 chunk 时调用。
+
+    这个阶段不生成最终论文笔记，只抽取 `topic/claim/page_refs/source_quotes`
+    等线索。最终总结阶段再把各 chunk 的线索合并，减少长上下文压力。
+    """
     return f"""
 请从以下论文片段抽取后续总结可能需要的证据线索。只返回 JSON 对象，格式为：
 {{"items": [{{"topic": "...", "claim": "...", "page_refs": [1], "source_quotes": ["..."]}}]}}
@@ -221,6 +347,26 @@ def call_chat_completion(
     temperature: float = 0.1,
     timeout: int = 180,
 ) -> str:
+    """调用 OpenAI-compatible Chat Completions 接口。
+
+    输入：
+    - `messages`：OpenAI chat 格式消息。
+    - `api_key` / `base_url` / `model`：来自 CLI、环境变量或 `.env`。
+    - `temperature`：默认较低，保证总结稳定。
+    - `timeout`：HTTP 请求超时时间，单位秒。
+
+    输出：
+    - 模型返回的 `choices[0].message.content` 字符串。
+
+    调用位置：
+    - `summarize_with_model()`：分块证据抽取、最终总结。
+    - `repair_summary_json()`：修复不合 schema 的 JSON。
+
+    兼容策略：
+    - 默认发送 `response_format={"type": "json_object"}`，要求 JSON。
+    - 某些兼容服务不支持该参数时，如果 HTTP 400 且响应文本提到
+      `response_format`，会移除该参数自动重试一次。
+    """
     try:
         import requests
     except ImportError as exc:
@@ -249,6 +395,15 @@ def call_chat_completion(
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
+    """从模型文本中解析 JSON 对象。
+
+    调用位置：
+    - `summarize_with_model()` 解析最终总结。
+    - `repair_summary_json()` 解析修复后的总结。
+
+    模型有时会把 JSON 包在 Markdown 代码块中，本函数会先剥离代码块；
+    如果前后有解释文字，也会截取第一个 `{` 到最后一个 `}` 之间的内容。
+    """
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -262,6 +417,22 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
 
 def validate_and_normalize(data: dict[str, Any]) -> dict[str, Any]:
+    """校验并规范化模型 summary JSON。
+
+    输入：
+    - 模型返回或 dry-run 生成的 summary 字典。
+
+    输出：
+    - 字段完整、类型稳定、顺序可由 `FIELD_SPECS` 控制的 summary 字典。
+
+    调用位置：
+    - `summarize_with_model()` 首次解析模型输出后调用。
+    - `repair_summary_json()` 解析修复输出后调用。
+    - `main()` 写文件前再调用一次，保证 dry-run 和真实路径一致。
+
+    如果字段缺失或类型错误，会收集错误并抛出 `ValueError`。真实模型路径中，
+    `summarize_with_model()` 会捕获该错误并交给 `repair_summary_json()`。
+    """
     normalized = schema_template()
     errors: list[str] = []
     for spec in FIELD_SPECS:
@@ -322,6 +493,13 @@ def repair_summary_json(
     base_url: str,
     model: str,
 ) -> dict[str, Any]:
+    """让模型修复不符合 schema 的 summary JSON。
+
+    调用位置：`summarize_with_model()` 捕获解析或校验异常后调用。
+
+    这里只修复结构，不重新阅读 PDF；prompt 会提供目标 schema、校验错误和
+    原始模型输出，让模型尽量保留已生成内容并补齐缺失字段。
+    """
     prompt = f"""
 下面的 JSON 不符合目标 schema。请修复为合法 JSON，并严格使用目标字段。
 
@@ -353,6 +531,21 @@ def summarize_with_model(
     pdf_link: str | None,
     code_link: str | None,
 ) -> dict[str, Any]:
+    """完成“论文文本 -> 结构化 summary”的核心模型流程。
+
+    调用位置：`main()` 在 PDF 文本抽取完成后调用。
+
+    流程：
+    1. `chunk_pages()` 判断论文是否需要分块。
+    2. 单 chunk：直接把带页码的原文送入 `final_summary_prompt()`。
+    3. 多 chunk：每个 chunk 先用 `chunk_extraction_prompt()` 抽取证据线索，
+       再把线索汇总送入最终总结 prompt。
+    4. `call_chat_completion()` 调用 DeepSeek/OpenAI-compatible 接口。
+    5. `parse_json_object()` + `validate_and_normalize()` 解析和校验。
+    6. 如果失败，调用 `repair_summary_json()` 自动修复一次。
+
+    输出会被 `main()` 继续传给 Markdown/DOCX/evidence 渲染函数。
+    """
     chunks = chunk_pages(pages)
     if len(chunks) == 1:
         source_text = pages_to_source(chunks[0])
@@ -395,6 +588,14 @@ def summarize_with_model(
 
 
 def sample_summary(title_hint: str | None = None) -> dict[str, Any]:
+    """生成 dry-run 用的示例 summary。
+
+    调用位置：`main()` 在 `--dry-run` 模式下调用。
+
+    作用：
+    - 不读取 PDF、不调用模型，也能验证 Markdown/DOCX/JSON 渲染链路。
+    - 给测试用例提供稳定的输入数据。
+    """
     data = schema_template()
     values = {
         ("paper_overview", "title"): title_hint or "Dry-run 示例论文",
@@ -428,10 +629,26 @@ def sample_summary(title_hint: str | None = None) -> dict[str, Any]:
 
 
 def value_of(summary: dict[str, Any], group: str, field: str) -> str:
+    """从 summary 中取某个字段的 `value`。
+
+    调用位置：
+    - `render_markdown()` 写正文。
+    - `render_docx()` 写表格右侧内容。
+
+    这个小函数把 `summary[group][field]["value"]` 的访问集中起来，让渲染层
+    不直接关心 evidence 结构。
+    """
     return summary[group][field]["value"]
 
 
 def render_markdown(summary: dict[str, Any], output_path: Path) -> None:
+    """把 summary 渲染为 Markdown 论文笔记。
+
+    调用位置：`main()` 在非 `--json-only` 模式下调用。
+
+    Markdown 输出只写 `value`，不写 evidence；证据单独由 `write_evidence()`
+    输出为 JSON，避免用户阅读版笔记过于拥挤。
+    """
     lines = ["# 论文笔记", ""]
     current_group = None
     for spec in FIELD_SPECS:
@@ -443,6 +660,14 @@ def render_markdown(summary: dict[str, Any], output_path: Path) -> None:
 
 
 def set_cell_text(cell: Any, text: str, *, bold: bool = False, align_center: bool = False) -> None:
+    """设置 DOCX 表格单元格文本和中文字体。
+
+    调用位置：
+    - `render_docx()` 写标题、左侧分组、字段标签、字段内容时反复调用。
+
+    `python-docx` 对中文字体需要同时设置 `run.font.name` 和
+    `w:eastAsia`，否则 Word 里可能回退到不一致的字体。
+    """
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn
     from docx.shared import Pt
@@ -458,6 +683,12 @@ def set_cell_text(cell: Any, text: str, *, bold: bool = False, align_center: boo
 
 
 def set_table_borders(table: Any) -> None:
+    """为 DOCX 表格设置黑色单线边框。
+
+    调用位置：`render_docx()` 创建表格后立即调用。
+
+    `python-docx` 没有高级边框 API，因此这里直接操作底层 OOXML。
+    """
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
@@ -477,6 +708,19 @@ def set_table_borders(table: Any) -> None:
 
 
 def render_docx(summary: dict[str, Any], output_path: Path) -> None:
+    """把 summary 渲染为截图样式的 DOCX 表格。
+
+    调用位置：`main()` 在非 `--json-only` 模式下调用。
+
+    渲染关系：
+    - 第一行合并三列作为“论文笔记”标题。
+    - 第 1 列按 `group_key` 合并为“论文概述/论文内容/实验/...”
+      等大类。
+    - 第 2 列写 `field_label`。
+    - 第 3 列写 summary 中对应字段的 `value`。
+
+    evidence 不放进 DOCX，保持表格简洁；需要核查时看 `.evidence.json`。
+    """
     try:
         from docx import Document
         from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
@@ -524,6 +768,12 @@ def render_docx(summary: dict[str, Any], output_path: Path) -> None:
 
 
 def write_evidence(summary: dict[str, Any], output_path: Path) -> None:
+    """把 summary 中的 evidence 部分单独写成 JSON 文件。
+
+    调用位置：`main()` 每次都会调用，不受 `--json-only` 影响。
+
+    输出文件用于人工复核：每个字段保留页码、短原文片段、置信度和备注。
+    """
     evidence: dict[str, Any] = {}
     for spec in FIELD_SPECS:
         evidence.setdefault(spec.group_key, {})
@@ -532,12 +782,33 @@ def write_evidence(summary: dict[str, Any], output_path: Path) -> None:
 
 
 def safe_stem(pdf_path: Path | None, title_hint: str | None) -> str:
+    """生成安全的输出文件名前缀。
+
+    调用位置：`main()` 写四类输出文件前调用。
+
+    优先使用 `title_hint`，否则使用 PDF 文件名；会把空格和特殊字符替换成
+    下划线，避免中文/空格/标点导致跨平台路径问题。
+    """
     raw = title_hint or (pdf_path.stem if pdf_path else "paper_note")
     stem = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", raw, flags=re.UNICODE).strip("._")
     return stem or "paper_note"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。
+
+    调用位置：`main()` 读取 `.env` 后调用。
+
+    重要接口：
+    - `--pdf`：真实论文 PDF 路径。
+    - `--out`：输出目录。
+    - `--api-key` / `--base-url` / `--model`：覆盖 `.env` 或环境变量。
+    - `--dry-run`：绕过 PDF 和模型，测试渲染链路。
+    - `--json-only`：只生成 JSON，不生成 DOCX/Markdown。
+
+    注意：默认值会读取 `DEEPSEEK_*`，再回退到 `OPENAI_*`，最后使用代码内
+    默认 DeepSeek 配置。
+    """
     parser = argparse.ArgumentParser(description="自动总结论文 PDF，生成 DOCX、Markdown 和 evidence JSON。")
     parser.add_argument("--pdf", type=Path, help="论文 PDF 路径。")
     parser.add_argument("--out", type=Path, default=Path("outputs"), help="输出目录。")
@@ -565,6 +836,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """命令行主流程。
+
+    调用位置：
+    - 文件被直接执行时，底部 `if __name__ == "__main__"` 调用。
+    - skill 包装脚本通过 `runpy.run_path(..., run_name="__main__")` 间接调用。
+
+    主流程负责把所有子模块串起来：
+    1. `load_env_file()` 加载 `.env`。
+    2. `build_arg_parser()` 解析 CLI。
+    3. dry-run 走 `sample_summary()`；真实模式走
+       `extract_pdf_pages()` + `summarize_with_model()`。
+    4. `validate_and_normalize()` 做最终兜底校验。
+    5. 写 `summary.json`、`evidence.json`，并按需写 Markdown 和 DOCX。
+    """
     load_env_file()
     args = build_arg_parser().parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
