@@ -146,6 +146,10 @@ paper-note/
 
 本项目可作为 Trae IDE 的 Skill 使用，详见 [skills/paper-note-summarizer/SKILL.md](skills/paper-note-summarizer/SKILL.md)。
 
+## 架构关系图
+
+每个文件的作用、调用链和 Mermaid 关系图见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 运行测试
 
 ```bash
